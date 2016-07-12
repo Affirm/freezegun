@@ -357,7 +357,8 @@ class _freeze_time(object):
 
     def start(self):
         if self.tick:
-            time_to_freeze = TickingDateTimeFactory(self.time_to_freeze, real_datetime.now())
+            time_to_freeze = (TickingDateTimeFactory(self.time_to_freeze, real_datetime.now())
+                              if self.tick is True else self.tick(self.time_to_freeze, real_datetime.now()))
         else:
             time_to_freeze = FrozenDateTimeFactory(self.time_to_freeze)
 
