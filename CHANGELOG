@@ -1,0 +1,25 @@
+Freezegun Changelog
+===================
+
+Latest
+------
+
+0.3.7
+-----
+
+* Fix CPython detection
+
+0.3.6
+-----
+
+* Catch TypeError when fetching attribute values
+* Speed improvements
+* Add manual tick increment
+
+
+0.3.5
+-----
+
+* Add `tick` argument to allow time to move forward
+* Performance improvements
+* Fix timezone example in README
