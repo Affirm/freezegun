@@ -13,7 +13,7 @@ else:
 
 setup(
     name='freezegun',
-    version='0.3.5.affirm',
+    version='0.3.7.affirm',
     description='Let your Python tests travel through time',
     author='Steve Pulec',
     author_email='spulec@gmail',
@@ -21,7 +21,9 @@ setup(
     packages=['freezegun'],
     install_requires=requires,
     include_package_data=True,
+    license='Apache 2.0',
     classifiers=[
+        'License :: OSI Approved :: Apache Software License',
         'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
