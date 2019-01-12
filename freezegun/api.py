@@ -402,7 +402,13 @@ class _freeze_time(object):
                 continue
             elif (not hasattr(module, "__name__") or module.__name__ in ('datetime', 'time')):
                 continue
-            for module_attribute in dir(module):
+
+            try:
+                attributes = dir(module)
+            except TypeError:
+                attributes = []
+
+            for module_attribute in attributes:
                 if module_attribute in real_names:
                     continue
                 try:
