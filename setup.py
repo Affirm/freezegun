@@ -13,7 +13,7 @@ else:
 
 setup(
     name='freezegun',
-    version='0.3.7.affirm.2',
+    version='0.3.7.affirm.3',
     description='Let your Python tests travel through time',
     author='Steve Pulec',
     author_email='spulec@gmail',

@@ -150,6 +150,9 @@ class FakeDatetimeMeta(FakeDateMeta):
     def __eq__(self, other):
         return (other is real_datetime) or (other is FakeDatetime)
 
+    def __hash__(self):
+        return FakeDateMeta.__hash__(self)
+
 
 class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate)):
     times_to_freeze = []
