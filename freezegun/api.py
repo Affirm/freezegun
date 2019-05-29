@@ -551,7 +551,8 @@ class _freeze_time(object):
         if self.auto_tick_seconds:
             freeze_factory = StepTickTimeFactory(self.time_to_freeze, self.auto_tick_seconds)
         elif self.tick:
-            freeze_factory = TickingDateTimeFactory(self.time_to_freeze, real_datetime.now())
+            freeze_factory = (TickingDateTimeFactory(self.time_to_freeze, real_datetime.now())
+                              if self.tick is True else self.tick(self.time_to_freeze, real_datetime.now()))
         else:
             freeze_factory = FrozenDateTimeFactory(self.time_to_freeze)
 
