@@ -286,6 +286,9 @@ class FakeDatetimeMeta(FakeDateMeta):
     def __eq__(self, other):
         return (other is real_datetime) or (other is FakeDatetime)
 
+    # python3: custom __eq__ requires custom __hash__
+    __hash__ = object.__hash__
+
 
 class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate)):
     def __new__(cls, *args, **kwargs):
