@@ -192,6 +192,13 @@ class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate)):
     def date(self):
         return date_to_fakedate(self)
 
+    @property
+    def nanosecond(self):
+        try:
+            return real_datetime.nanosecond
+        except AttributeError:
+            return 0
+
     @classmethod
     def today(self):
         return self.now(tz=None)
@@ -458,7 +465,11 @@ class _freeze_time(object):
                     continue
                 elif (not hasattr(module, "__name__") or module.__name__ in ('datetime', 'time')):
                     continue
-                for module_attribute in dir(module):
+                try:
+                    attributes = dir(module)
+                except TypeError:
+                    attributes = []
+                for module_attribute in attributes:
                     if module_attribute in self.fake_names:
                         continue
                     try:
