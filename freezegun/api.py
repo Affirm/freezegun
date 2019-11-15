@@ -16,11 +16,64 @@ real_gmtime = time.gmtime
 real_strftime = time.strftime
 real_date = datetime.date
 real_datetime = datetime.datetime
+real_date_objects = [real_time, real_localtime, real_gmtime, real_strftime, real_date, real_datetime]
+_real_time_object_ids = set(id(obj) for obj in real_date_objects)
+
+
 
 try:
     import copy_reg as copyreg
 except ImportError:
     import copyreg
+
+# keep a cache of module attributes otherwise freezegun will need to analyze too many modules all the time
+_GLOBAL_MODULES_CACHE = {}
+
+
+def _get_module_attributes(module):
+    result = []
+    try:
+        module_attributes = dir(module)
+    except TypeError:
+        return result
+    for attribute_name in module_attributes:
+        try:
+            attribute_value = getattr(module, attribute_name)
+        except (ImportError, AttributeError, TypeError):
+            # For certain libraries, this can result in ImportError(_winreg) or AttributeError (celery)
+            continue
+        else:
+            result.append((attribute_name, attribute_value))
+    return result
+
+
+def _setup_module_cache(module):
+    date_attrs = []
+    all_module_attributes = _get_module_attributes(module)
+    for attribute_name, attribute_value in all_module_attributes:
+        if id(attribute_value) in _real_time_object_ids:
+            date_attrs.append((attribute_name, attribute_value))
+    _GLOBAL_MODULES_CACHE[module.__name__] = (_get_module_attributes_hash(module), date_attrs)
+
+
+def _get_module_attributes_hash(module):
+    try:
+        module_dir = dir(module)
+    except TypeError:
+        module_dir = []
+    return '{0}-{1}'.format(id(module), hash(frozenset(module_dir)))
+
+
+def _get_cached_module_attributes(module):
+    module_hash, cached_attrs = _GLOBAL_MODULES_CACHE.get(module.__name__, ('0', []))
+    if _get_module_attributes_hash(module) == module_hash:
+        return cached_attrs
+
+    # cache miss: update the cache and return the refreshed value
+    _setup_module_cache(module)
+    # return the newly cached value
+    module_hash, cached_attrs = _GLOBAL_MODULES_CACHE[module.__name__]
+    return cached_attrs
 
 
 # Stolen from six
@@ -300,7 +353,7 @@ class FrozenDateTimeFactory(object):
 
 class _freeze_time(object):
 
-    def __init__(self, time_to_freeze_str, tz_offset, ignore, tick):
+    def __init__(self, time_to_freeze_str, tz_offset, ignore, tick, in_behave):
 
         self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)
         self.tz_offset = tz_offset
@@ -308,6 +361,7 @@ class _freeze_time(object):
         self.tick = tick
         self.undo_changes = []
         self.modules_at_start = set()
+        self.in_behave = in_behave
 
     def __call__(self, func):
         if inspect.isclass(func):
@@ -406,30 +460,38 @@ class _freeze_time(object):
         self.modules_at_start = set(sys.modules.keys())
 
         for mod_name, module in list(sys.modules.items()):
-            if mod_name is None or module is None:
+            if mod_name is None or module is None or mod_name == __name__:
                 continue
-            elif mod_name.startswith(self.ignore):
+            elif mod_name.startswith(self.ignore) or mod_name.endswith('.six.moves'):
                 continue
             elif (not hasattr(module, "__name__") or module.__name__ in ('datetime', 'time')):
                 continue
 
-            try:
-                attributes = dir(module)
-            except TypeError:
-                attributes = []
-
-            for module_attribute in attributes:
-                if module_attribute in real_names:
-                    continue
+            if self.in_behave:
                 try:
-                    attribute_value = getattr(module, module_attribute)
-                except (ImportError, AttributeError, TypeError):
-                    # For certain libraries, this can result in ImportError(_winreg) or AttributeError (celery)
-                    continue
-                fake = fakes.get(id(attribute_value))
-                if fake:
-                    setattr(module, module_attribute, fake)
-                    add_change((module, module_attribute, attribute_value))
+                    attributes = dir(module)
+                except TypeError:
+                    attributes = []
+
+                for module_attribute in attributes:
+                    if module_attribute in real_names:
+                        continue
+                    try:
+                        attribute_value = getattr(module, module_attribute)
+                    except (ImportError, AttributeError, TypeError):
+                        # For certain libraries, this can result in ImportError(_winreg) or AttributeError (celery)
+                        continue
+                    fake = fakes.get(id(attribute_value))
+                    if fake:
+                        setattr(module, module_attribute, fake)
+                        add_change((module, module_attribute, attribute_value))
+            else:
+                module_attrs = _get_cached_module_attributes(module)
+                for attribute_name, attribute_value in module_attrs:
+                    fake = fakes.get(id(attribute_value))
+                    if fake:
+                        setattr(module, attribute_name, fake)
+                        add_change((module, attribute_name, attribute_value))
 
         datetime.datetime.times_to_freeze.append(time_to_freeze)
         datetime.datetime.tz_offsets.append(self.tz_offset)
@@ -501,7 +563,7 @@ class _freeze_time(object):
         return wrapper
 
 
-def freeze_time(time_to_freeze=None, tz_offset=0, ignore=None, tick=False):
+def freeze_time(time_to_freeze=None, tz_offset=0, ignore=None, tick=False, in_behave=False):
     # Python3 doesn't have basestring, but it does have str.
     try:
         string_type = basestring
@@ -520,7 +582,7 @@ def freeze_time(time_to_freeze=None, tz_offset=0, ignore=None, tick=False):
     ignore.append('django.utils.six.moves')
     ignore.append('threading')
     ignore.append('Queue')
-    return _freeze_time(time_to_freeze, tz_offset, ignore, tick)
+    return _freeze_time(time_to_freeze, tz_offset, ignore, tick, in_behave)
 
 
 # Setup adapters for sqlite
