@@ -353,7 +353,7 @@ class FrozenDateTimeFactory(object):
 
 class _freeze_time(object):
 
-    def __init__(self, time_to_freeze_str, tz_offset, ignore, tick, in_behave):
+    def __init__(self, time_to_freeze_str, tz_offset, ignore, tick):
 
         self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)
         self.tz_offset = tz_offset
@@ -361,7 +361,6 @@ class _freeze_time(object):
         self.tick = tick
         self.undo_changes = []
         self.modules_at_start = set()
-        self.in_behave = in_behave
 
     def __call__(self, func):
         if inspect.isclass(func):
@@ -467,31 +466,15 @@ class _freeze_time(object):
             elif (not hasattr(module, "__name__") or module.__name__ in ('datetime', 'time')):
                 continue
 
-            if self.in_behave:
-                try:
-                    attributes = dir(module)
-                except TypeError:
-                    attributes = []
-
-                for module_attribute in attributes:
-                    if module_attribute in real_names:
-                        continue
-                    try:
-                        attribute_value = getattr(module, module_attribute)
-                    except (ImportError, AttributeError, TypeError):
-                        # For certain libraries, this can result in ImportError(_winreg) or AttributeError (celery)
-                        continue
-                    fake = fakes.get(id(attribute_value))
-                    if fake:
-                        setattr(module, module_attribute, fake)
-                        add_change((module, module_attribute, attribute_value))
-            else:
-                module_attrs = _get_cached_module_attributes(module)
-                for attribute_name, attribute_value in module_attrs:
-                    fake = fakes.get(id(attribute_value))
-                    if fake:
-                        setattr(module, attribute_name, fake)
-                        add_change((module, attribute_name, attribute_value))
+            module_attrs = _get_cached_module_attributes(module)
+            for attribute_name, attribute_value in module_attrs:
+                # NB: allow importing the real things
+                if attribute_name in real_names:
+                    continue
+                fake = fakes.get(id(attribute_value))
+                if fake:
+                    setattr(module, attribute_name, fake)
+                    add_change((module, attribute_name, attribute_value))
 
         datetime.datetime.times_to_freeze.append(time_to_freeze)
         datetime.datetime.tz_offsets.append(self.tz_offset)
@@ -563,7 +546,7 @@ class _freeze_time(object):
         return wrapper
 
 
-def freeze_time(time_to_freeze=None, tz_offset=0, ignore=None, tick=False, in_behave=False):
+def freeze_time(time_to_freeze=None, tz_offset=0, ignore=None, tick=False):
     # Python3 doesn't have basestring, but it does have str.
     try:
         string_type = basestring
@@ -582,7 +565,7 @@ def freeze_time(time_to_freeze=None, tz_offset=0, ignore=None, tick=False, in_be
     ignore.append('django.utils.six.moves')
     ignore.append('threading')
     ignore.append('Queue')
-    return _freeze_time(time_to_freeze, tz_offset, ignore, tick, in_behave)
+    return _freeze_time(time_to_freeze, tz_offset, ignore, tick)
 
 
 # Setup adapters for sqlite
