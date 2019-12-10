@@ -19,6 +19,7 @@ real_datetime = datetime.datetime
 real_date_objects = [real_time, real_localtime, real_gmtime, real_strftime, real_date, real_datetime]
 _real_time_object_ids = set(id(obj) for obj in real_date_objects)
 
+_real_names = {'real_date', 'real_datetime', 'real_gmtime', 'real_localtime', 'real_strftime', 'real_time'}
 
 
 try:
@@ -30,50 +31,40 @@ except ImportError:
 _GLOBAL_MODULES_CACHE = {}
 
 
-def _get_module_attributes(module):
+def _get_module_attributes(module, module_attributes):
     result = []
-    try:
-        module_attributes = dir(module)
-    except TypeError:
-        return result
     for attribute_name in module_attributes:
+        if attribute_name in _real_names:
+            continue
         try:
             attribute_value = getattr(module, attribute_name)
+            if id(attribute_value) in _real_time_object_ids:
+                result.append((attribute_name, attribute_value))
+
         except (ImportError, AttributeError, TypeError):
             # For certain libraries, this can result in ImportError(_winreg) or AttributeError (celery)
             continue
-        else:
-            result.append((attribute_name, attribute_value))
+
     return result
 
 
-def _setup_module_cache(module):
-    date_attrs = []
-    all_module_attributes = _get_module_attributes(module)
-    for attribute_name, attribute_value in all_module_attributes:
-        if id(attribute_value) in _real_time_object_ids:
-            date_attrs.append((attribute_name, attribute_value))
-    _GLOBAL_MODULES_CACHE[module.__name__] = (_get_module_attributes_hash(module), date_attrs)
-
-
-def _get_module_attributes_hash(module):
-    try:
-        module_dir = dir(module)
-    except TypeError:
-        module_dir = []
-    return '{0}-{1}'.format(id(module), hash(frozenset(module_dir)))
-
-
 def _get_cached_module_attributes(module):
-    module_hash, cached_attrs = _GLOBAL_MODULES_CACHE.get(module.__name__, ('0', []))
-    if _get_module_attributes_hash(module) == module_hash:
+    module_hash, cached_attrs = _GLOBAL_MODULES_CACHE.get(module.__name__, (None, []))
+
+    # NB: we're assuming that module attributes will only change if the module is reloaded
+    h = id(module)
+    if h == module_hash:
         return cached_attrs
 
+    try:
+        module_attributes = dir(module)
+    except TypeError:
+        module_attributes = []
+
     # cache miss: update the cache and return the refreshed value
-    _setup_module_cache(module)
-    # return the newly cached value
-    module_hash, cached_attrs = _GLOBAL_MODULES_CACHE[module.__name__]
-    return cached_attrs
+    date_attrs = _get_module_attributes(module, module_attributes)
+    _GLOBAL_MODULES_CACHE[module.__name__] = (h, date_attrs)
+    return date_attrs
 
 
 # Stolen from six
@@ -81,55 +72,11 @@ def with_metaclass(meta, *bases):
     """Create a base class with a metaclass."""
     return meta("NewBase", bases, {})
 
+
 _is_cpython = (
     hasattr(platform, 'python_implementation') and
     platform.python_implementation().lower() == "cpython"
 )
-
-
-class FakeTime(object):
-
-    def __init__(self, time_to_freeze, previous_time_function):
-        self.time_to_freeze = time_to_freeze
-        self.previous_time_function = previous_time_function
-
-    def __call__(self):
-        current_time = self.time_to_freeze()
-        return calendar.timegm(current_time.timetuple()) + current_time.microsecond / 1000000.0
-
-
-class FakeLocalTime(object):
-    def __init__(self, time_to_freeze, previous_localtime_function=None):
-        self.time_to_freeze = time_to_freeze
-        self.previous_localtime_function = previous_localtime_function
-
-    def __call__(self, t=None):
-        if t is not None:
-            return real_localtime(t)
-        shifted_time = self.time_to_freeze() - datetime.timedelta(seconds=time.timezone)
-        return shifted_time.timetuple()
-
-
-class FakeGMTTime(object):
-    def __init__(self, time_to_freeze, previous_gmtime_function):
-        self.time_to_freeze = time_to_freeze
-        self.previous_gmtime_function = previous_gmtime_function
-
-    def __call__(self, t=None):
-        if t is not None:
-            return real_gmtime(t)
-        return self.time_to_freeze().timetuple()
-
-
-class FakeStrfTime(object):
-    def __init__(self, time_to_freeze, previous_strftime_function):
-        self.time_to_freeze = time_to_freeze
-        self.previous_strftime_function = previous_strftime_function
-
-    def __call__(self, format, time_to_format=None):
-        if time_to_format is None:
-            time_to_format = FakeLocalTime(self.time_to_freeze)()
-        return real_strftime(format, time_to_format)
 
 
 class FakeDateMeta(type):
@@ -156,9 +103,6 @@ def date_to_fakedate(date):
 
 
 class FakeDate(with_metaclass(FakeDateMeta, real_date)):
-    dates_to_freeze = []
-    tz_offsets = []
-
     def __new__(self, *args, **kwargs):
         return real_date.__new__(self, *args, **kwargs)
 
@@ -178,17 +122,10 @@ class FakeDate(with_metaclass(FakeDateMeta, real_date)):
             return result
 
     @classmethod
-    def today(self):
-        result = self._date_to_freeze() + datetime.timedelta(hours=self._tz_offset())
+    def today(cls):
+        result = FakeDatetime._time_to_freeze() + datetime.timedelta(hours=FakeDatetime._tz_offset())
         return date_to_fakedate(result)
 
-    @classmethod
-    def _date_to_freeze(self):
-        return self.dates_to_freeze[-1]()
-
-    @classmethod
-    def _tz_offset(self):
-        return self.tz_offsets[-1]
 
 FakeDate.min = date_to_fakedate(real_date.min)
 FakeDate.max = date_to_fakedate(real_date.max)
@@ -235,11 +172,11 @@ class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate)):
         return datetime_to_fakedatetime(real_datetime.astimezone(self, tz))
 
     @classmethod
-    def now(self, tz=None):
+    def now(cls, tz=None):
         if tz:
-            result = tz.fromutc(self._time_to_freeze().replace(tzinfo=tz)) + datetime.timedelta(hours=self._tz_offset())
+            result = tz.fromutc(cls._time_to_freeze().replace(tzinfo=tz)) + datetime.timedelta(hours=cls._tz_offset())
         else:
-            result = self._time_to_freeze() + datetime.timedelta(hours=self._tz_offset())
+            result = cls._time_to_freeze() + datetime.timedelta(hours=cls._tz_offset())
         return datetime_to_fakedatetime(result)
 
     def date(self):
@@ -253,24 +190,68 @@ class FakeDatetime(with_metaclass(FakeDatetimeMeta, real_datetime, FakeDate)):
             return 0
 
     @classmethod
-    def today(self):
-        return self.now(tz=None)
+    def today(cls):
+        return cls.now(tz=None)
 
     @classmethod
-    def utcnow(self):
-        result = self._time_to_freeze()
+    def utcnow(cls):
+        result = cls._time_to_freeze()
         return datetime_to_fakedatetime(result)
 
     @classmethod
-    def _time_to_freeze(self):
-        return self.times_to_freeze[-1]()
+    def _time_to_freeze(cls):
+        try:
+            return cls.times_to_freeze[-1]()
+        except IndexError:
+            # NB: prevent race between call in a thread and stop()
+            return real_datetime.utcnow()
 
     @classmethod
-    def _tz_offset(self):
-        return self.tz_offsets[-1]
+    def _tz_offset(cls):
+        try:
+            return cls.tz_offsets[-1]
+        except IndexError:
+            # NB: prevent race between call in a thread and stop()
+            return 0
 
 FakeDatetime.min = datetime_to_fakedatetime(real_datetime.min)
 FakeDatetime.max = datetime_to_fakedatetime(real_datetime.max)
+
+
+def fake_time():
+    current_time = FakeDatetime._time_to_freeze()
+    return calendar.timegm(current_time.timetuple()) + current_time.microsecond / 1000000.0
+
+
+def fake_localtime(t=None):
+    if t is not None:
+        return real_localtime(t)
+    shifted_time = FakeDatetime._time_to_freeze() - datetime.timedelta(seconds=time.timezone)
+    return shifted_time.timetuple()
+
+
+def fake_gmtime(t=None):
+    if t is not None:
+        return real_gmtime(t)
+    return FakeDatetime._time_to_freeze().timetuple()
+
+
+def fake_strftime(format, time_to_format=None):
+    if time_to_format is None:
+        time_to_format = fake_localtime()
+    return real_strftime(format, time_to_format)
+
+
+_to_patch = [
+    (real_date, FakeDate),
+    (real_datetime, FakeDatetime),
+    (real_gmtime, fake_gmtime),
+    (real_localtime, fake_localtime),
+    (real_strftime, fake_strftime),
+    (real_time, fake_time),
+]
+_reals = dict((id(fake), real) for real, fake in _to_patch)
+_fakes = dict((id(real), fake) for real, fake in _to_patch)
 
 
 def convert_to_timezone_naive(time_to_freeze):
@@ -352,15 +333,14 @@ class FrozenDateTimeFactory(object):
 
 
 class _freeze_time(object):
+    _undo_changes = []
+    _modules_at_start = set()
 
     def __init__(self, time_to_freeze_str, tz_offset, ignore, tick):
-
         self.time_to_freeze = _parse_time_to_freeze(time_to_freeze_str)
         self.tz_offset = tz_offset
         self.ignore = tuple(ignore)
         self.tick = tick
-        self.undo_changes = []
-        self.modules_at_start = set()
 
     def __call__(self, func):
         if inspect.isclass(func):
@@ -377,13 +357,13 @@ class _freeze_time(object):
             orig_tearDownClass = getattr(klass, 'tearDownClass', None)
 
             @classmethod
-            def setUpClass(self):
+            def setUpClass(cls):
                 self.start()
                 if orig_setUpClass is not None:
                     orig_setUpClass()
 
             @classmethod
-            def tearDownClass(self):
+            def tearDownClass(cls):
                 if orig_tearDownClass is not None:
                     orig_tearDownClass()
                 self.stop()
@@ -425,83 +405,66 @@ class _freeze_time(object):
         else:
             time_to_freeze = FrozenDateTimeFactory(self.time_to_freeze)
 
-        # Change the modules
-        datetime.datetime = FakeDatetime
-        datetime.date = FakeDate
-        fake_time = FakeTime(time_to_freeze, time.time)
-        fake_localtime = FakeLocalTime(time_to_freeze, time.localtime)
-        fake_gmtime = FakeGMTTime(time_to_freeze, time.gmtime)
-        fake_strftime = FakeStrfTime(time_to_freeze, time.strftime)
-        time.time = fake_time
-        time.localtime = fake_localtime
-        time.gmtime = fake_gmtime
-        time.strftime = fake_strftime
+        # only patch on first context entry for faster re-entrant freezing
+        if len(FakeDatetime.times_to_freeze) == 0:
+            # Change the modules
+            datetime.datetime = FakeDatetime
+            datetime.date = FakeDate
+            time.time = fake_time
+            time.localtime = fake_localtime
+            time.gmtime = fake_gmtime
+            time.strftime = fake_strftime
 
-        copyreg.dispatch_table[real_datetime] = pickle_fake_datetime
-        copyreg.dispatch_table[real_date] = pickle_fake_date
+            copyreg.dispatch_table[real_datetime] = pickle_fake_datetime
+            copyreg.dispatch_table[real_date] = pickle_fake_date
 
+            _freeze_time._modules_at_start = set(sys.modules.keys())
+            self._patch_modules(_freeze_time._modules_at_start)
+
+        FakeDatetime.times_to_freeze.append(time_to_freeze)
+        FakeDatetime.tz_offsets.append(self.tz_offset)
+
+        return time_to_freeze
+
+    def _patch_modules(self, modules):
         # Change any place where the module had already been imported
-        to_patch = [
-            ('real_date', real_date, 'FakeDate', FakeDate),
-            ('real_datetime', real_datetime, 'FakeDatetime', FakeDatetime),
-            ('real_gmtime', real_gmtime, 'FakeGMTTime', fake_gmtime),
-            ('real_localtime', real_localtime, 'FakeLocalTime', fake_localtime),
-            ('real_strftime', real_strftime, 'FakeStrfTime', fake_strftime),
-            ('real_time', real_time, 'FakeTime', fake_time),
-        ]
-        real_names = tuple(real_name for real_name, real, fake_name, fake in to_patch)
-        self.fake_names = tuple(fake_name for real_name, real, fake_name, fake in to_patch)
-        self.reals = dict((id(fake), real) for real_name, real, fake_name, fake in to_patch)
-        fakes = dict((id(real), fake) for real_name, real, fake_name, fake in to_patch)
-        add_change = self.undo_changes.append
-
-        # Save the current loaded modules
-        self.modules_at_start = set(sys.modules.keys())
-
-        for mod_name, module in list(sys.modules.items()):
+        for mod_name in modules:
+            module = sys.modules[mod_name]
             if mod_name is None or module is None or mod_name == __name__:
                 continue
             elif mod_name.startswith(self.ignore) or mod_name.endswith('.six.moves'):
                 continue
             elif (not hasattr(module, "__name__") or module.__name__ in ('datetime', 'time')):
                 continue
-
             module_attrs = _get_cached_module_attributes(module)
             for attribute_name, attribute_value in module_attrs:
-                # NB: allow importing the real things
-                if attribute_name in real_names:
-                    continue
-                fake = fakes.get(id(attribute_value))
+                fake = _fakes.get(id(attribute_value))
                 if fake:
                     setattr(module, attribute_name, fake)
-                    add_change((module, attribute_name, attribute_value))
-
-        datetime.datetime.times_to_freeze.append(time_to_freeze)
-        datetime.datetime.tz_offsets.append(self.tz_offset)
-
-        datetime.date.dates_to_freeze.append(time_to_freeze)
-        datetime.date.tz_offsets.append(self.tz_offset)
-
-        return time_to_freeze
+                    self._undo_changes.append((module, attribute_name, attribute_value))
 
     def stop(self):
-        datetime.datetime.times_to_freeze.pop()
-        datetime.datetime.tz_offsets.pop()
-        datetime.date.dates_to_freeze.pop()
-        datetime.date.tz_offsets.pop()
+        FakeDatetime.times_to_freeze.pop()
+        FakeDatetime.tz_offsets.pop()
 
-        if not datetime.datetime.times_to_freeze:
+        # undo patching only at last context exit
+        if len(FakeDatetime.times_to_freeze) == 0:
             datetime.datetime = real_datetime
             datetime.date = real_date
+            time.time = real_time
+            time.strftime = real_strftime
+            time.gmtime = real_gmtime
+            time.localtime = real_localtime
             copyreg.dispatch_table.pop(real_datetime)
             copyreg.dispatch_table.pop(real_date)
-            for module, module_attribute, original_value in self.undo_changes:
+            for module, module_attribute, original_value in self._undo_changes:
                 setattr(module, module_attribute, original_value)
-            self.undo_changes = []
+            _undo_changes = []
 
             # Restore modules loaded after start()
-            modules_to_restore = set(sys.modules.keys()) - self.modules_at_start
-            self.modules_at_start = set()
+            modules_to_restore = set(sys.modules.keys()) - self._modules_at_start
+            self._modules_at_start = set()
+            fake_names = {'FakeDate', 'FakeDatetime', 'fake_gmtime', 'fake_localtime', 'fake_strftime', 'fake_time'}
             for mod_name in modules_to_restore:
                 module = sys.modules.get(mod_name, None)
                 if mod_name is None or module is None:
@@ -515,7 +478,7 @@ class _freeze_time(object):
                 except TypeError:
                     attributes = []
                 for module_attribute in attributes:
-                    if module_attribute in self.fake_names:
+                    if module_attribute in fake_names:
                         continue
                     try:
                         attribute_value = getattr(module, module_attribute)
@@ -523,14 +486,9 @@ class _freeze_time(object):
                         # For certain libraries, this can result in ImportError(_winreg) or AttributeError (celery)
                         continue
 
-                    real = self.reals.get(id(attribute_value))
+                    real = _reals.get(id(attribute_value))
                     if real:
                         setattr(module, module_attribute, real)
-
-        time.time = time.time.previous_time_function
-        time.gmtime = time.gmtime.previous_gmtime_function
-        time.localtime = time.localtime.previous_localtime_function
-        time.strftime = time.strftime.previous_strftime_function
 
     def decorate_callable(self, func):
         def wrapper(*args, **kwargs):
